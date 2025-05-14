@@ -1,0 +1,4 @@
+   test string
+   another line
+   search test
+   hello world
