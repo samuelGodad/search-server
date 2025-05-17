@@ -52,3 +52,13 @@ class Config:
         if not path:
             raise ValueError("File path not found in configuration")
         return path 
+
+    @property
+    def max_requests_per_minute(self) -> int:
+        """Get maximum requests per minute from configuration."""
+        return self.config.getint("rate_limit", "max_requests_per_minute", fallback=100)
+
+    @property
+    def rate_limit_window(self) -> int:
+        """Get rate limit window in seconds from configuration."""
+        return self.config.getint("rate_limit", "window_seconds", fallback=60) 

@@ -4,26 +4,31 @@ Tests for server functionality.
 import socket
 import threading
 import time
+import json
 import pytest
 from src.server import SearchServer
+from src.search import SearchAlgorithm
 
 
 @pytest.fixture
 def server_config(tmp_path, test_file):
-    """Create a temporary server configuration."""
-    config_content = f"""
+    """Create a temporary config file."""
+    config_path = tmp_path / "config.ini"
+    with open(config_path, "w") as f:
+        f.write(f"""
 [server]
-port = 44445
+port = 0
 ssl_enabled = false
 reread_on_query = false
 
 [file]
 linuxpath = {test_file}
-"""
-    config_path = tmp_path / "config.ini"
-    config_path.write_text(config_content)
-    return str(config_path)
 
+[rate_limit]
+max_requests_per_minute = 100
+window_seconds = 60
+""")
+    return str(config_path)
 
 @pytest.fixture
 def test_file(tmp_path):
@@ -32,7 +37,9 @@ def test_file(tmp_path):
 line2
 line3
 test string
-another line"""
+another line
+search test
+hello world"""
     file_path = tmp_path / "test.txt"
     file_path.write_text(file_content)
     return str(file_path)
@@ -58,8 +65,8 @@ def test_server_start_stop(server_config, test_file):
     assert not server_thread.is_alive()
 
 
-def test_server_connection(server_config, test_file):
-    """Test server connection and response."""
+def test_server_json_protocol(server_config, test_file):
+    """Test server JSON protocol."""
     server = SearchServer(server_config)
     
     # Start server in a separate thread
@@ -75,12 +82,20 @@ def test_server_connection(server_config, test_file):
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.connect(('localhost', 44445))
         
-        # Send test string
-        client.sendall(b"test string\n")
+        # Send JSON request
+        request = {
+            'query': 'test string',
+            'algorithm': 'linear',
+            'benchmark': False
+        }
+        client.sendall(f"{json.dumps(request)}\n".encode('utf-8'))
         
         # Receive response
-        response = client.recv(1024).decode('utf-8')
-        assert response == "STRING EXISTS\n"
+        response = json.loads(client.recv(4096).decode('utf-8'))
+        assert response['status'] == 'success'
+        assert response['found'] is True
+        assert 'execution_time' in response
+        assert response['algorithm'] == 'linear'
         
     finally:
         client.close()
@@ -88,8 +103,8 @@ def test_server_connection(server_config, test_file):
         server_thread.join(timeout=1)
 
 
-def test_server_nonexistent_string(server_config, test_file):
-    """Test server response for nonexistent string."""
+def test_server_benchmark(server_config, test_file):
+    """Test server benchmarking functionality."""
     server = SearchServer(server_config)
     
     # Start server in a separate thread
@@ -105,14 +120,115 @@ def test_server_nonexistent_string(server_config, test_file):
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client.connect(('localhost', 44445))
         
-        # Send nonexistent string
-        client.sendall(b"nonexistent\n")
+        # Send benchmark request
+        request = {
+            'query': 'test string',
+            'algorithm': 'linear',
+            'benchmark': True
+        }
+        client.sendall(f"{json.dumps(request)}\n".encode('utf-8'))
         
         # Receive response
-        response = client.recv(1024).decode('utf-8')
-        assert response == "STRING NOT FOUND\n"
+        response = json.loads(client.recv(4096).decode('utf-8'))
+        assert response['status'] == 'success'
+        assert 'results' in response
+        assert all(alg.value in response['results'] for alg in SearchAlgorithm)
         
     finally:
         client.close()
+        server.stop()
+        server_thread.join(timeout=1)
+
+
+def test_server_error_handling(server_config, test_file):
+    """Test server error handling."""
+    server = SearchServer(server_config)
+    
+    # Start server in a separate thread
+    server_thread = threading.Thread(target=server.start)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    # Give server time to start
+    time.sleep(0.1)
+    
+    try:
+        # Connect to server
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(('localhost', 44445))
+        
+        # Send invalid JSON
+        client.sendall(b"invalid json\n")
+        
+        # Receive error response
+        response = json.loads(client.recv(4096).decode('utf-8'))
+        assert response['status'] == 'error'
+        assert 'message' in response
+        
+    finally:
+        client.close()
+        server.stop()
+        server_thread.join(timeout=1)
+
+
+def test_server_legacy_protocol(server_config, test_file):
+    """Test server legacy protocol support."""
+    server = SearchServer(server_config)
+    
+    # Start server in a separate thread
+    server_thread = threading.Thread(target=server.start)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    # Give server time to start
+    time.sleep(0.1)
+    
+    try:
+        # Connect to server
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.connect(('localhost', 44445))
+        
+        # Send legacy format request
+        client.sendall(b"test string\n")
+        
+        # Receive response
+        response = json.loads(client.recv(4096).decode('utf-8'))
+        assert response['status'] == 'success'
+        assert response['found'] is True
+        assert response['algorithm'] == 'linear'
+        
+    finally:
+        client.close()
+        server.stop()
+        server_thread.join(timeout=1)
+
+
+def test_server_rate_limiting(server_config, test_file):
+    """Test server rate limiting."""
+    server = SearchServer(server_config)
+    
+    # Start server in a separate thread
+    server_thread = threading.Thread(target=server.start)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    # Give server time to start
+    time.sleep(0.1)
+    
+    try:
+        # Make multiple requests quickly
+        for _ in range(110):  # Exceed rate limit
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.connect(('localhost', 44445))
+            client.sendall(b"test string\n")
+            response = client.recv(4096).decode('utf-8')
+            client.close()
+            
+            if "RATE LIMIT EXCEEDED" in response:
+                break
+        else:
+            pytest.fail("Rate limiting not working")
+            
+    finally:
         server.stop()
         server_thread.join(timeout=1) 

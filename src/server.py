@@ -4,11 +4,15 @@ Main server module.
 import socket
 import ssl
 import threading
-from typing import Optional
+import json
+from typing import Optional, Tuple
+import time
+from pathlib import Path
 
 from config import Config
-from search import FileSearcher
+from search import FileSearcher, SearchAlgorithm
 from utils import setup_logging, get_client_info, format_debug_message
+from rate_limiter import RateLimiter
 
 
 class SearchServer:
@@ -29,13 +33,61 @@ class SearchServer:
         )
         self.server_socket: Optional[socket.socket] = None
         self.ssl_context: Optional[ssl.SSLContext] = None
+        self.rate_limiter = RateLimiter(
+            max_requests=self.config.max_requests_per_minute,
+            time_window=60
+        )
 
     def setup_ssl(self) -> None:
         """Set up SSL context if enabled."""
-        if self.config.ssl_enabled:
+        if not self.config.ssl_enabled:
+            return
+
+        try:
+            cert_path = Path('certs')
+            if not cert_path.exists():
+                self.logger.error("SSL certificates not found. Please run setup_ssl.sh first.")
+                return
+
             self.ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            # TODO: Add certificate configuration
-            self.logger.info("SSL enabled")
+            self.ssl_context.load_cert_chain(
+                certfile=str(cert_path / 'server.crt'),
+                keyfile=str(cert_path / 'server.key')
+            )
+            # Don't require client certificate for now
+            self.ssl_context.verify_mode = ssl.CERT_NONE
+            self.ssl_context.check_hostname = False
+            
+            self.logger.info("SSL context configured successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to set up SSL: {str(e)}")
+            raise
+
+    def parse_request(self, data: str) -> Tuple[str, Optional[SearchAlgorithm], bool]:
+        """
+        Parse client request.
+
+        Args:
+            data: Raw request data
+
+        Returns:
+            Tuple of (query, algorithm, is_benchmark)
+        """
+        try:
+            request = json.loads(data)
+            query = request.get('query', '').strip()
+            algorithm_name = request.get('algorithm', 'linear')
+            is_benchmark = request.get('benchmark', False)
+            
+            try:
+                algorithm = SearchAlgorithm(algorithm_name)
+            except ValueError:
+                algorithm = SearchAlgorithm.LINEAR
+                
+            return query, algorithm, is_benchmark
+        except json.JSONDecodeError:
+            # Legacy format: plain string
+            return data.strip(), SearchAlgorithm.LINEAR, False
 
     def handle_client(self, client_socket: socket.socket) -> None:
         """
@@ -48,26 +100,47 @@ class SearchServer:
             # Get client information
             ip_address, _ = get_client_info(client_socket)
 
+            # Check rate limit
+            is_allowed, remaining = self.rate_limiter.is_allowed(ip_address)
+            if not is_allowed:
+                response = "Rate limit exceeded"
+                client_socket.sendall(f"{response}\n".encode('utf-8'))
+                self.logger.warning(f"Rate limit exceeded for client {ip_address}")
+                return
+
             # Receive data
-            data = client_socket.recv(1024).decode('utf-8')
+            data = client_socket.recv(1024).decode('utf-8').strip()
             if not data:
                 return
 
-            # Search for string
-            found, execution_time = self.searcher.search(data)
-
-            # Prepare response
-            response = "STRING EXISTS\n" if found else "STRING NOT FOUND\n"
+            # Remove null characters
+            data = data.rstrip('\x00')
             
-            # Log debug information
-            debug_msg = format_debug_message(data, ip_address, execution_time, found)
+            # Parse request
+            query, algorithm, is_benchmark = self.parse_request(data)
+            
+            # Search for string
+            start_time = time.time()
+            found, execution_time = self.searcher.search(query, algorithm)
+            execution_time_ms = execution_time * 1000  # Convert to ms
+            
+            # Log debug info
+            debug_msg = format_debug_message(
+                query=query,
+                ip_address=ip_address,
+                execution_time=execution_time_ms,
+                found=found
+            )
             self.logger.debug(debug_msg)
-
+            
             # Send response
-            client_socket.sendall(response.encode('utf-8'))
-
+            response = "STRING EXISTS" if found else "STRING NOT FOUND"
+            client_socket.sendall(f"{response}\n".encode('utf-8'))
+            
         except Exception as e:
             self.logger.error(f"Error handling client: {str(e)}")
+            error_response = "Error processing request"
+            client_socket.sendall(f"{error_response}\n".encode('utf-8'))
         finally:
             client_socket.close()
 
@@ -126,3 +199,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main() 
+    
