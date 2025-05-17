@@ -1,0 +1,18 @@
+[Unit]
+Description=Search Server Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=search-server
+Group=search-server
+WorkingDirectory=/opt/search-server
+ExecStart=/opt/search-server/venv/bin/python3 /opt/search-server/src/server.py
+Restart=always
+RestartSec=3
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=search-server
+
+[Install]
+WantedBy=multi-user.target 

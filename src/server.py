@@ -39,6 +39,7 @@ class SearchServer:
         )
         self._running = False
         self._port = None
+        self._shutdown_event = threading.Event()
 
     @property
     def port(self) -> Optional[int]:
@@ -110,7 +111,7 @@ class SearchServer:
             # Check rate limit
             is_allowed, remaining = self.rate_limiter.is_allowed(ip_address)
             if not is_allowed:
-                response = "Rate limit exceeded"
+                response = "RATE LIMIT EXCEEDED"
                 client_socket.sendall(f"{response}\n".encode('utf-8'))
                 self.logger.warning(f"Rate limit exceeded for client {ip_address}")
                 return
@@ -118,6 +119,8 @@ class SearchServer:
             # Receive data
             data = client_socket.recv(1024).decode('utf-8').strip()
             if not data:
+                response = "STRING NOT FOUND"
+                client_socket.sendall(f"{response}\n".encode('utf-8'))
                 return
 
             # Remove null characters
@@ -125,6 +128,12 @@ class SearchServer:
             
             # Parse request
             query, algorithm, is_benchmark = self.parse_request(data)
+            
+            # Handle empty query
+            if not query:
+                response = "STRING NOT FOUND"
+                client_socket.sendall(f"{response}\n".encode('utf-8'))
+                return
             
             # Search for string
             start_time = time.time()
@@ -167,8 +176,10 @@ class SearchServer:
             self._running = True
             self.logger.info(f"Server started on port {self._port}")
 
-            while self._running:
+            while self._running and not self._shutdown_event.is_set():
                 try:
+                    # Set a timeout for accept to allow checking shutdown event
+                    self.server_socket.settimeout(0.1)
                     client_socket, _ = self.server_socket.accept()
                     
                     # Wrap socket with SSL if enabled
@@ -184,6 +195,8 @@ class SearchServer:
                         args=(client_socket,)
                     )
                     client_thread.start()
+                except socket.timeout:
+                    continue
                 except Exception as e:
                     if self._running:
                         self.logger.error(f"Error accepting connection: {str(e)}")
@@ -196,6 +209,7 @@ class SearchServer:
     def stop(self) -> None:
         """Stop the server."""
         self._running = False
+        self._shutdown_event.set()
         if self.server_socket:
             try:
                 self.server_socket.close()

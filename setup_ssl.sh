@@ -1,19 +1,28 @@
 #!/bin/bash
 
-# Create certificates directory
+# Exit on error
+set -e
+
+echo "Setting up SSL certificates..."
+
+# Create certs directory
 mkdir -p certs
+cd certs
 
-# Generate private key
-openssl genrsa -out certs/server.key 2048
-
-# Generate CSR (Certificate Signing Request)
-openssl req -new -key certs/server.key -out certs/server.csr -subj "/CN=localhost"
-
-# Generate self-signed certificate
-openssl x509 -req -days 365 -in certs/server.csr -signkey certs/server.key -out certs/server.crt
+# Generate private key and certificate
+openssl req -x509 -newkey rsa:4096 \
+    -keyout server.key \
+    -out server.crt \
+    -days 365 \
+    -nodes \
+    -subj "/CN=localhost" \
+    -addext "subjectAltName = DNS:localhost,IP:127.0.0.1"
 
 # Set proper permissions
-chmod 600 certs/server.key
-chmod 644 certs/server.crt
+chmod 600 server.key
+chmod 644 server.crt
 
-echo "SSL certificates generated in certs directory" 
+echo "SSL certificates generated successfully!"
+echo "Files are in: certs/"
+echo "- server.key: Private key"
+echo "- server.crt: Certificate" 
