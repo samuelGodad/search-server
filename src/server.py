@@ -37,6 +37,13 @@ class SearchServer:
             max_requests=self.config.max_requests_per_minute,
             time_window=60
         )
+        self._running = False
+        self._port = None
+
+    @property
+    def port(self) -> Optional[int]:
+        """Get the actual port the server is running on."""
+        return self._port
 
     def setup_ssl(self) -> None:
         """Set up SSL context if enabled."""
@@ -151,40 +158,50 @@ class SearchServer:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind(('', self.config.port))
+            self._port = self.server_socket.getsockname()[1]
             self.server_socket.listen(5)
 
             # Set up SSL if enabled
             self.setup_ssl()
 
-            self.logger.info(f"Server started on port {self.config.port}")
+            self._running = True
+            self.logger.info(f"Server started on port {self._port}")
 
-            while True:
-                client_socket, _ = self.server_socket.accept()
-                
-                # Wrap socket with SSL if enabled
-                if self.ssl_context:
-                    client_socket = self.ssl_context.wrap_socket(
-                        client_socket,
-                        server_side=True
+            while self._running:
+                try:
+                    client_socket, _ = self.server_socket.accept()
+                    
+                    # Wrap socket with SSL if enabled
+                    if self.ssl_context:
+                        client_socket = self.ssl_context.wrap_socket(
+                            client_socket,
+                            server_side=True
+                        )
+
+                    # Handle client in a new thread
+                    client_thread = threading.Thread(
+                        target=self.handle_client,
+                        args=(client_socket,)
                     )
-
-                # Handle client in a new thread
-                client_thread = threading.Thread(
-                    target=self.handle_client,
-                    args=(client_socket,)
-                )
-                client_thread.start()
+                    client_thread.start()
+                except Exception as e:
+                    if self._running:
+                        self.logger.error(f"Error accepting connection: {str(e)}")
 
         except Exception as e:
             self.logger.error(f"Server error: {str(e)}")
         finally:
-            if self.server_socket:
-                self.server_socket.close()
+            self.stop()
 
     def stop(self) -> None:
         """Stop the server."""
+        self._running = False
         if self.server_socket:
-            self.server_socket.close()
+            try:
+                self.server_socket.close()
+            except Exception as e:
+                self.logger.error(f"Error closing server socket: {str(e)}")
+            self.server_socket = None
             self.logger.info("Server stopped")
 
 

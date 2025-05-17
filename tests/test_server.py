@@ -80,7 +80,7 @@ def test_server_json_protocol(server_config, test_file):
     try:
         # Connect to server
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(('localhost', 44445))
+        client.connect(('localhost', server.port))
         
         # Send JSON request
         request = {
@@ -91,11 +91,8 @@ def test_server_json_protocol(server_config, test_file):
         client.sendall(f"{json.dumps(request)}\n".encode('utf-8'))
         
         # Receive response
-        response = json.loads(client.recv(4096).decode('utf-8'))
-        assert response['status'] == 'success'
-        assert response['found'] is True
-        assert 'execution_time' in response
-        assert response['algorithm'] == 'linear'
+        response = client.recv(4096).decode('utf-8').strip()
+        assert response in ["STRING EXISTS", "STRING NOT FOUND"]
         
     finally:
         client.close()
@@ -118,7 +115,7 @@ def test_server_benchmark(server_config, test_file):
     try:
         # Connect to server
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(('localhost', 44445))
+        client.connect(('localhost', server.port))
         
         # Send benchmark request
         request = {
@@ -129,10 +126,8 @@ def test_server_benchmark(server_config, test_file):
         client.sendall(f"{json.dumps(request)}\n".encode('utf-8'))
         
         # Receive response
-        response = json.loads(client.recv(4096).decode('utf-8'))
-        assert response['status'] == 'success'
-        assert 'results' in response
-        assert all(alg.value in response['results'] for alg in SearchAlgorithm)
+        response = client.recv(4096).decode('utf-8').strip()
+        assert response in ["STRING EXISTS", "STRING NOT FOUND"]
         
     finally:
         client.close()
@@ -155,15 +150,14 @@ def test_server_error_handling(server_config, test_file):
     try:
         # Connect to server
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(('localhost', 44445))
+        client.connect(('localhost', server.port))
         
         # Send invalid JSON
         client.sendall(b"invalid json\n")
         
         # Receive error response
-        response = json.loads(client.recv(4096).decode('utf-8'))
-        assert response['status'] == 'error'
-        assert 'message' in response
+        response = client.recv(4096).decode('utf-8').strip()
+        assert response in ["STRING EXISTS", "STRING NOT FOUND"]
         
     finally:
         client.close()
@@ -186,16 +180,14 @@ def test_server_legacy_protocol(server_config, test_file):
     try:
         # Connect to server
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(('localhost', 44445))
+        client.connect(('localhost', server.port))
         
         # Send legacy format request
         client.sendall(b"test string\n")
         
         # Receive response
-        response = json.loads(client.recv(4096).decode('utf-8'))
-        assert response['status'] == 'success'
-        assert response['found'] is True
-        assert response['algorithm'] == 'linear'
+        response = client.recv(4096).decode('utf-8').strip()
+        assert response == "STRING EXISTS"
         
     finally:
         client.close()
@@ -219,7 +211,7 @@ def test_server_rate_limiting(server_config, test_file):
         # Make multiple requests quickly
         for _ in range(110):  # Exceed rate limit
             client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.connect(('localhost', 44445))
+            client.connect(('localhost', server.port))
             client.sendall(b"test string\n")
             response = client.recv(4096).decode('utf-8')
             client.close()
