@@ -4,4 +4,4 @@
 source venv/bin/activate
 
 # Run performance tests
-python tests/test_performance.py 
+pytest tests/

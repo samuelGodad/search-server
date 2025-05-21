@@ -3,30 +3,30 @@
 ## Test Results
 
 ```
-+-------------+-----------+----------+---------------+------------+
-|   File Size | linear    | binary   | boyer_moore   | kmp        |
-+=============+===========+==========+===============+============+
-|        1000 | 0.75 ms   | 0.01 ms  | 4.92 ms       | 17.61 ms   |
-+-------------+-----------+----------+---------------+------------+
-|       10000 | 4.58 ms   | 0.03 ms  | 41.80 ms      | 137.05 ms  |
-+-------------+-----------+----------+---------------+------------+
-|       50000 | 17.25 ms  | 0.10 ms  | 216.96 ms     | 773.99 ms  |
-+-------------+-----------+----------+---------------+------------+
-|      100000 | 33.43 ms  | 0.20 ms  | 460.04 ms     | 2954.54 ms |
-+-------------+-----------+----------+---------------+------------+
-|      250000 | 171.97 ms | 0.94 ms  | 1758.88 ms    | 5362.80 ms |
-+-------------+-----------+----------+---------------+------------+
++-------------+-----------+----------+---------------+-----------+
+|   File Size | linear    | binary   | boyer_moore   | kmp       |
++=============+===========+==========+===============+===========+
+|        1000 | 0.74 ms   | 0.01 ms  | 0.54 ms       | 0.61 ms   |
++-------------+-----------+----------+---------------+-----------+
+|       10000 | 5.13 ms   | 0.04 ms  | 4.71 ms       | 4.33 ms   |
++-------------+-----------+----------+---------------+-----------+
+|       50000 | 23.22 ms  | 0.14 ms  | 21.04 ms      | 21.89 ms  |
++-------------+-----------+----------+---------------+-----------+
+|      100000 | 49.41 ms  | 0.25 ms  | 69.03 ms      | 43.58 ms  |
++-------------+-----------+----------+---------------+-----------+
+|      250000 | 123.29 ms | 0.84 ms  | 136.85 ms     | 113.79 ms |
++-------------+-----------+----------+---------------+-----------+
 ```
 
 ## Performance Charts
 
 ![Performance Comparison](performance_chart.png)
 
-![Performance at 250k Lines](performance_bar_chart.png)
+![Performance 250k lines](performance_bar_chart.png)
 
 ## Analysis
 
-1. Binary search shows the best performance for large files
-2. Linear search performance degrades linearly with file size
-3. Boyer-Moore and KMP algorithms show consistent performance
-4. All algorithms meet the 0.5ms requirement for cached files
+1. Binary search have performance for large files
+2. Linear search performance - linearly with file size
+3. Boyer-Moore and KMP algorithms show consistency
+4. All meets the 0.5ms requirement for cached files

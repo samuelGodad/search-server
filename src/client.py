@@ -1,11 +1,14 @@
 """
 Client module for the search server.
 """
+
 import socket
 import ssl
 import json
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple
 from pathlib import Path
+# import os
+# import argparse
 
 from config import Config
 
@@ -13,52 +16,108 @@ from config import Config
 class SearchClient:
     """Client for the search server."""
 
-    def __init__(self, config_path: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        port: Optional[int] = None,
+        config_path: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> None:
         """
         Initialize search client.
 
         Args:
+            port: Port number to connect to (overrides config)
             config_path: Path to the configuration file
+            timeout: Socket timeout in seconds
         """
-        self.config = Config(config_path)
+        try:
+            self.config = Config(config_path or "client_config.ini")
+        except FileNotFoundError:
+            # If config file doesn't exist, create a default config
+            self.config = None
+        self.port = port
+        self.timeout = timeout
         self.socket: Optional[socket.socket] = None
         self.ssl_context: Optional[ssl.SSLContext] = None
 
     def setup_ssl(self) -> None:
         """Set up SSL context if enabled."""
-        if not self.config.ssl_enabled:
+        if not (self.config and self.config.ssl_enabled):
             return
 
         try:
-            cert_path = Path('certs')
+            cert_path = Path("certs")
             if not cert_path.exists():
-                raise FileNotFoundError("SSL certificates not found. Please run setup_ssl.sh first.")
+                raise FileNotFoundError(
+                    "SSL certificates not found. Run setup_ssl.sh first."
+                )
 
-            self.ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            self.ssl_context.load_verify_locations(str(cert_path / 'server.crt'))
-            # Don't verify hostname for local development
-            self.ssl_context.check_hostname = False
-            self.ssl_context.verify_mode = ssl.CERT_NONE
+            self.ssl_context = ssl.create_default_context(
+                ssl.Purpose.SERVER_AUTH)
+
+            # Always verify server certificate and provide client certificate
+            self.ssl_context.verify_mode = ssl.CERT_REQUIRED
+            self.ssl_context.check_hostname = True
+            self.ssl_context.load_verify_locations(str(cert_path / "ca.crt"))
+            self.ssl_context.load_cert_chain(
+                str(cert_path / "client.crt"), str(cert_path / "client.key")
+            )
+
+            # Set minimum TLS version to 1.2 for better security
+            self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+
+            print("SSL created successfully with certificate verification")
         except Exception as e:
+            print(f"SSL setup error: {str(e)}")
             raise RuntimeError(f"Failed to set up SSL: {str(e)}")
 
     def connect(self) -> None:
         """Connect to the server."""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            
-            if self.config.ssl_enabled:
+            if self.timeout:
+                self.socket.settimeout(self.timeout)
+
+            # Set up SSL if enabled
+            if self.config and self.config.ssl_enabled:
+                print("Setting up SSL...")
                 self.setup_ssl()
+                print("SSL context created, wrapping socket...")
                 self.socket = self.ssl_context.wrap_socket(
-                    self.socket,
-                    server_hostname='localhost'
+                    self.socket, server_hostname="localhost"
                 )
-            
-            self.socket.connect(('localhost', self.config.port))
+                print("Socket wrapped with SSL")
+
+            port = (
+                self.port
+                if self.port is not None
+                else (self.config.port if self.config else 44445)
+            )
+            print(f"Connecting to localhost:{port}...")
+            self.socket.connect(("localhost", port))
+
+            # Verify SSL connection
+            if self.config and self.config.ssl_enabled:
+                cert = self.socket.getpeercert()
+                if not cert:
+                    raise ssl.SSLError("Server certificate verification fail")
+                print("SSL connection established with verified server")
+            else:
+                print("Connected successfully (non-SSL)")
         except Exception as e:
+            import traceback
+
+            print(f"Connection error: {str(e)}")
+            print(traceback.format_exc())
             raise ConnectionError(f"Failed to connect to server: {str(e)}")
 
-    def search(self, query: str, algorithm: str = 'linear', benchmark: bool = False) -> Tuple[bool, float]:
+    def search(
+        self,
+        query: str,
+        algorithm: str = "linear",
+        benchmark: bool = False,
+        legacy: bool = False,
+    ) -> Tuple[bool, float]:
         """
         Search for a string on the server.
 
@@ -66,6 +125,7 @@ class SearchClient:
             query: String to search for
             algorithm: Search algorithm to use
             benchmark: Whether to run in benchmark mode
+            legacy: Use legacy protocol (plain text)
 
         Returns:
             Tuple of (found, execution_time)
@@ -74,30 +134,57 @@ class SearchClient:
             self.connect()
 
         try:
-            # Prepare request
+            # Create request as JSON
             request = {
-                'query': query,
-                'algorithm': algorithm,
-                'benchmark': benchmark
+                "query": query,
+                "algorithm": algorithm,
+                "benchmark": benchmark
             }
-            request_data = json.dumps(request).encode('utf-8')
+            request_data = json.dumps(request).encode("utf-8") + b"\n"
 
+            print("Sending request...")
             # Send request
             self.socket.sendall(request_data)
+            print("Request sent, waiting for response...")
 
             # Receive response
-            response = self.socket.recv(1024).decode('utf-8').strip()
-            
+            response = b""
+            while not response.endswith(b"\n"):
+                chunk = self.socket.recv(1024)
+                if not chunk:
+                    break
+                response += chunk
+
+            if not response:
+                raise ConnectionError("Connection closed by server")
+
+            response = response.decode("utf-8").rstrip("\r\n")
+            print(f"Received response: {response}")
+
             # Parse response
             if response == "STRING EXISTS":
                 return True, 0.0
             elif response == "STRING NOT FOUND":
                 return False, 0.0
+            elif response == "RATE LIMIT EXCEEDED":
+                raise RuntimeError("RATE LIMIT EXCEEDED")
+            elif response == "INVALID REQUEST":
+                raise ValueError("INVALID REQUEST")
+            elif response.startswith("Error"):
+                raise RuntimeError(response)
             else:
                 raise RuntimeError(f"Unexpected response: {response}")
 
+        except socket.timeout:
+            raise TimeoutError("Connection timed out")
+        except ConnectionResetError:
+            raise ConnectionError("Connection reset by peer")
         except Exception as e:
+            if isinstance(e, (TimeoutError, ConnectionError, ValueError)):
+                raise
             raise RuntimeError(f"Search failed: {str(e)}")
+        finally:
+            self.close()  # Close connection after each request
 
     def close(self) -> None:
         """Close the connection."""
@@ -109,24 +196,44 @@ class SearchClient:
 def main() -> None:
     """Main entry point."""
     import sys
-    
-    if len(sys.argv) < 2:
-        print("Usage: python client.py <query> [algorithm]")
-        sys.exit(1)
+    import argparse
 
-    query = sys.argv[1]
-    algorithm = sys.argv[2] if len(sys.argv) > 2 else 'linear'
+    parser = argparse.ArgumentParser(description="Search client")
+    parser.add_argument("query", help="String to search for")
+    parser.add_argument(
+        "--algorithm",
+        "-a",
+        default="linear",
+        choices=["linear", "binary", "boyer_moore", "kmp"],
+        help="Search algorithm to use",
+    )
+    parser.add_argument(
+        "--port", "-p", type=int, help="Port number to connect to"
+    )
+    parser.add_argument(
+        "--config", "-c", help="Path to configuration file"
+    )
+    parser.add_argument(
+        "--timeout", "-t", type=float, help="Connection timeout in seconds"
+    )
 
-    client = SearchClient()
+    args = parser.parse_args()
+
     try:
-        found, _ = client.search(query, algorithm)
-        print("STRING EXISTS" if found else "STRING NOT FOUND")
+        client = SearchClient(
+            port=args.port,
+            config_path=args.config,
+            timeout=args.timeout,
+        )
+        found, _ = client.search(args.query, algorithm=args.algorithm)
+        if found:
+            print("String found!")
+        else:
+            print("String not found.")
     except Exception as e:
         print(f"Error: {str(e)}")
-    finally:
-        client.close()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    main() 
-
+    main()

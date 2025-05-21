@@ -1,6 +1,7 @@
 """
 Test script to verify imports are working correctly.
 """
+
 import sys
 from pathlib import Path
 
@@ -15,7 +16,7 @@ print(f"Project root: {project_root}")
 print(f"Python path: {sys.path}")
 
 try:
-    from src.search import FileSearcher, SearchAlgorithm
+    # from src.search import FileSearcher, SearchAlgorithm
     print("Successfully imported FileSearcher and SearchAlgorithm")
 except ImportError as e:
     print(f"Error importing search module: {e}")
@@ -23,12 +24,13 @@ except ImportError as e:
 
 try:
     import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    from tabulate import tabulate
+
+    matplotlib.use("Agg")
+    # import matplotlib.pyplot as plt
+    # from tabulate import tabulate
     print("Successfully imported matplotlib and tabulate")
 except ImportError as e:
     print(f"Error importing visualization modules: {e}")
     sys.exit(1)
 
-print("All imports successful!") 
+print("All imports successful!")

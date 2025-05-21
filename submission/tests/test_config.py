@@ -1,7 +1,8 @@
 """
 Tests for configuration handling.
 """
-import os
+
+# import os
 import pytest
 from src.config import Config
 
@@ -26,7 +27,7 @@ linuxpath = /test/path/file.txt
 def test_config_loading(config_file):
     """Test configuration loading."""
     config = Config(config_file)
-    
+
     assert config.port == 44445
     assert config.ssl_enabled is True
     assert config.reread_on_query is False
@@ -44,9 +45,9 @@ linuxpath = /test/path/file.txt
 """
     config_path = tmp_path / "config.ini"
     config_path.write_text(config_content)
-    
+
     config = Config(str(config_path))
-    
+
     assert config.ssl_enabled is False
     assert config.reread_on_query is False
 
@@ -59,13 +60,13 @@ port = 44445
 """
     config_path = tmp_path / "config.ini"
     config_path.write_text(config_content)
-    
+
     config = Config(str(config_path))
-    with pytest.raises(ValueError, match="File path not found in configuration"):
+    with pytest.raises(ValueError, match="File not found in config"):
         _ = config.file_path
 
 
 def test_invalid_config_file():
     """Test handling of invalid config file."""
     with pytest.raises(FileNotFoundError):
-        Config("nonexistent.ini") 
+        Config("nonexistent.ini")

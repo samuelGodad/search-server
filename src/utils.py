@@ -1,6 +1,7 @@
 """
 Utility functions module.
 """
+
 import logging
 import socket
 from typing import Tuple
@@ -13,7 +14,7 @@ def setup_logging() -> logging.Logger:
     Returns:
         Configured logger instance
     """
-    logger = logging.getLogger('search_server')
+    logger = logging.getLogger("search_server")
     logger.setLevel(logging.DEBUG)
 
     # Create console handler
@@ -21,7 +22,9 @@ def setup_logging() -> logging.Logger:
     handler.setLevel(logging.DEBUG)
 
     # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     handler.setFormatter(formatter)
 
     # Add handler to logger
@@ -45,10 +48,7 @@ def get_client_info(client_socket: socket.socket) -> Tuple[str, int]:
 
 
 def format_debug_message(
-    query: str,
-    ip_address: str,
-    execution_time: float,
-    found: bool
+    query: str, ip_address: str, execution_time: float, found: bool
 ) -> str:
     """
     Format debug message for logging.
@@ -67,4 +67,4 @@ def format_debug_message(
         f"IP={ip_address} "
         f"Time={execution_time:.2f}ms "
         f"Result={'STRING EXISTS' if found else 'STRING NOT FOUND'}"
-    ) 
+    )
