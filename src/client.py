@@ -30,11 +30,14 @@ class SearchClient:
             config_path: Path to the configuration file
             timeout: Socket timeout in seconds
         """
-        try:
-            self.config = Config(config_path or "client_config.ini")
-        except FileNotFoundError:
-            # If config file doesn't exist, create a default config
-            self.config = None
+        self.config = None
+        if config_path:
+            try:
+                self.config = Config(config_path)
+            except FileNotFoundError:
+                print(f"Config file not found: {config_path}, using defaults")
+                self.config = None
+
         self.port = port
         self.timeout = timeout
         self.socket: Optional[socket.socket] = None
@@ -42,14 +45,15 @@ class SearchClient:
 
     def setup_ssl(self) -> None:
         """Set up SSL context if enabled."""
-        if not (self.config and self.config.ssl_enabled):
-            return
+        # Always set up SSL context when this method is called
+        # The caller is responsible for determining when to call this
 
         try:
             cert_path = Path("certs")
             if not cert_path.exists():
                 raise FileNotFoundError(
-                    "SSL certificates not found. Run setup_ssl.sh first."
+                    "SSL certificates not found. Run `./setup_ssl.sh` "
+                    "from the project root directory to generate certificates."
                 )
 
             self.ssl_context = ssl.create_default_context(
@@ -73,13 +77,27 @@ class SearchClient:
 
     def connect(self) -> None:
         """Connect to the server."""
-        try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            if self.timeout:
-                self.socket.settimeout(self.timeout)
+        # Determine port to connect to
+        port = self.port
+        if port is None:
+            port = self.config.port if self.config else 44445
 
-            # Set up SSL if enabled
-            if self.config and self.config.ssl_enabled:
+        # Try SSL first if certificates are available
+        ssl_attempted = False
+
+        # Check if we should try SSL (either from config or if certs exist)
+        should_try_ssl = (
+            (self.config and self.config.ssl_enabled) or
+            Path("certs").exists()
+        )
+
+        if should_try_ssl:
+            try:
+                # Try SSL connection first
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                if self.timeout:
+                    self.socket.settimeout(self.timeout)
+
                 print("Setting up SSL...")
                 self.setup_ssl()
                 print("SSL context created, wrapping socket...")
@@ -88,28 +106,45 @@ class SearchClient:
                 )
                 print("Socket wrapped with SSL")
 
-            port = (
-                self.port
-                if self.port is not None
-                else (self.config.port if self.config else 44445)
-            )
-            print(f"Connecting to localhost:{port}...")
-            self.socket.connect(("localhost", port))
+                print(f"Connecting to localhost:{port}...")
+                self.socket.connect(("localhost", port))
 
-            # Verify SSL connection
-            if self.config and self.config.ssl_enabled:
+                # Verify SSL connection
                 cert = self.socket.getpeercert()
                 if not cert:
-                    raise ssl.SSLError("Server certificate verification fail")
+                    raise ssl.SSLError(
+                        "Server certificate verification failed")
                 print("SSL connection established with verified server")
-            else:
-                print("Connected successfully (non-SSL)")
+                ssl_attempted = True
+                return
+
+            except Exception as e:
+                print(f"SSL connection failed: {str(e)}, trying non-SSL...")
+                if self.socket:
+                    self.socket.close()
+                    self.socket = None
+                ssl_attempted = True
+
+        # Try non-SSL connection (either as fallback or primary)
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if self.timeout:
+                self.socket.settimeout(self.timeout)
+
+            print(f"Connecting to localhost:{port}...")
+            self.socket.connect(("localhost", port))
+            print("Connected successfully (non-SSL)")
+
         except Exception as e:
             import traceback
-
             print(f"Connection error: {str(e)}")
             print(traceback.format_exc())
-            raise ConnectionError(f"Failed to connect to server: {str(e)}")
+            if ssl_attempted:
+                raise ConnectionError(
+                    f"Both SSL & non-SSL failed. Last error: {str(e)}"
+                    )
+            else:
+                raise ConnectionError(f"Failed to connect to server: {str(e)}")
 
     def search(
         self,
@@ -142,10 +177,8 @@ class SearchClient:
             }
             request_data = json.dumps(request).encode("utf-8") + b"\n"
 
-            print("Sending request...")
             # Send request
             self.socket.sendall(request_data)
-            print("Request sent, waiting for response...")
 
             # Receive response
             response = b""
@@ -159,7 +192,6 @@ class SearchClient:
                 raise ConnectionError("Connection closed by server")
 
             response = response.decode("utf-8").rstrip("\r\n")
-            print(f"Received response: {response}")
 
             # Parse response
             if response == "STRING EXISTS":

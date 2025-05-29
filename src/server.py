@@ -1,5 +1,12 @@
 """
 Main server module.
+
+This module implements a TCP server for string search operations with the following features:
+- SSL/TLS support for secure communication
+- Rate limiting to prevent abuse
+- Multiple search algorithms (linear, binary, Boyer-Moore, KMP)
+- Configurable file rereading behavior
+- Thread pool for handling concurrent connections
 """
 
 import socket
@@ -7,6 +14,7 @@ import ssl
 import threading
 import json
 from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
 # import time
 from pathlib import Path
 # import os
@@ -15,6 +23,21 @@ from config import Config
 from search import FileSearcher, SearchAlgorithm
 from utils import setup_logging, format_debug_message
 from rate_limiter import RateLimiter
+
+
+class SearchServerError(Exception):
+    """Base exception class for search server errors."""
+    pass
+
+
+class SSLSetupError(SearchServerError):
+    """Exception raised when SSL setup fails."""
+    pass
+
+
+class ConnectionError(SearchServerError):
+    """Exception raised when connection handling fails."""
+    pass
 
 
 class SearchServer:
@@ -26,6 +49,10 @@ class SearchServer:
 
         Args:
             config_path: Path to the configuration file
+
+        Raises:
+            FileNotFoundError: If configuration file is not found
+            ValueError: If configuration is invalid
         """
         self.config = Config(config_path)
         self.logger = setup_logging()
@@ -34,11 +61,14 @@ class SearchServer:
         self.server_socket: Optional[socket.socket] = None
         self.ssl_context: Optional[ssl.SSLContext] = None
         self.rate_limiter = RateLimiter(
-            max_requests=self.config.max_requests_per_minute, window_seconds=60
+            max_requests=self.config.max_requests_per_minute,
+            window_seconds=self.config.rate_limit_window
         )
         self._running = False
         self._port = None
         self._shutdown_event = threading.Event()
+        # Thread pool to limit concurrent connections
+        self._thread_pool = ThreadPoolExecutor(max_workers=50)
 
     @property
     def port(self) -> Optional[int]:
@@ -46,18 +76,26 @@ class SearchServer:
         return self._port
 
     def setup_ssl(self) -> None:
-        """Set up SSL context with strict security requirements."""
+        """
+        Set up SSL context with strict security requirements.
+
+        Raises:
+            SSLSetupError: If SSL setup fails
+        """
         try:
             cert_path = Path("certs")
             if not cert_path.exists():
                 raise FileNotFoundError(
-                    "SSL certificates not found. Run setup_ssl.sh first."
+                    "SSL certificates not found."
+                    " Run './setup_ssl.sh' from the project root directory "
+                    "to generate certificates."
                 )
 
             self.ssl_context = ssl.create_default_context(
-                    ssl.Purpose.CLIENT_AUTH)
+                ssl.Purpose.CLIENT_AUTH)
             self.ssl_context.load_cert_chain(
-                str(cert_path / "server.crt"), str(cert_path / "server.key")
+                str(cert_path / "server.crt"),
+                str(cert_path / "server.key")
             )
 
             # Always require client certificate verification
@@ -78,7 +116,7 @@ class SearchServer:
             )
         except Exception as e:
             self.logger.error(f"SSL setup error: {str(e)}")
-            raise RuntimeError(f"Failed to set up SSL: {str(e)}")
+            raise SSLSetupError(f"Failed to set up SSL: {str(e)}")
 
     def parse_request(
             self, data: str) -> Tuple[str, Optional[SearchAlgorithm], bool]:
@@ -122,7 +160,16 @@ class SearchServer:
     def handle_client(
         self, client_socket: socket.socket, client_address: Tuple[str, int]
     ) -> None:
-        """Handle a client connection."""
+        """
+        Handle a client connection.
+
+        Args:
+            client_socket: Client socket
+            client_address: Client address tuple (ip, port)
+
+        Raises:
+            ConnectionError: If client handling fails
+        """
         self.logger.info(f"Handling client from {client_address}")
         try:
             # Read the request
@@ -134,7 +181,7 @@ class SearchServer:
             try:
                 query, algorithm, benchmark = self.parse_request(
                     data.decode("utf-8")
-                    )
+                )
             except ValueError as e:
                 self.logger.error(f"Invalid request: {str(e)}")
                 client_socket.sendall(b"INVALID REQUEST\n")
@@ -155,9 +202,11 @@ class SearchServer:
             try:
                 if self.config.reread_on_query:
                     self.logger.debug(
-                        f"DEBUG: Query={query}, Algorithm={algorithm}")
+                        f"Re-reading file for query: {query}, "
+                        f"Algorithm: {algorithm}")
                     self.searcher = FileSearcher(
-                        self.config.file_path, self.config.reread_on_query
+                        self.config.file_path,
+                        self.config.reread_on_query
                     )
             except FileNotFoundError as e:
                 self.logger.error(f"File not found: {str(e)}")
@@ -173,7 +222,8 @@ class SearchServer:
                 # Log debug info if benchmark mode
                 if benchmark:
                     self.logger.debug(
-                        f"DEBUG: Query={query}, Algorithm={algorithm}")
+                        f"Benchmark mode: Query={query}, Algorithm={algorithm}"
+                    )
 
                 # Perform the search
                 found, execution_time = self.searcher.search(query, algorithm)
@@ -201,8 +251,73 @@ class SearchServer:
         finally:
             client_socket.close()
 
+    def _handle_connection(
+        self, client_socket: socket.socket, client_address: Tuple[str, int]
+    ) -> None:
+        """
+        Handle SSL wrapping and client processing.
+
+        Args:
+            client_socket: Client socket
+            client_address: Client address tuple (ip, port)
+
+        Raises:
+            ConnectionError: If connection handling fails
+        """
+        try:
+            # If SSL is enabled, wrap the socket immediately and verify
+            if self.config.ssl_enabled:
+                try:
+                    # Perform SSL handshake with timeout
+                    client_socket.settimeout(10.0)
+                    client_socket = self.ssl_context.wrap_socket(
+                        client_socket, server_side=True
+                    )
+                    # Verify client certificate
+                    cert = client_socket.getpeercert()
+                    if not cert:
+                        raise ssl.SSLError(
+                            "No client certificate provided"
+                        )
+                    self.logger.info(
+                        "SSL handshake completed successfully"
+                    )
+                except ssl.SSLError as e:
+                    self.logger.error(
+                        f"SSL handshake failed from {client_address}: {str(e)}"
+                    )
+                    try:
+                        client_socket.sendall(b"SSL_REQUIRED\n")
+                    except Exception:
+                        pass
+                    client_socket.close()
+                    return
+                except Exception as e:
+                    self.logger.error(
+                        f"SSL connection error from {client_address}: {str(e)}"
+                    )
+                    client_socket.close()
+                    return
+
+            # Process the client request
+            self.handle_client(client_socket, client_address)
+
+        except Exception as e:
+            self.logger.error(
+                f"Error handling connection from {client_address}: {str(e)}"
+            )
+            try:
+                client_socket.close()
+            except Exception:
+                pass
+
     def start(self) -> None:
-        """Start the search server."""
+        """
+        Start the search server.
+
+        Raises:
+            SearchServerError: If server fails to start
+        """
         if self._running:
             self.logger.warning("Server is already running")
             return
@@ -211,10 +326,10 @@ class SearchServer:
             # Create server socket
             self.server_socket = socket.socket(
                 socket.AF_INET, socket.SOCK_STREAM
-                )
+            )
             self.server_socket.setsockopt(
                 socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
-                )
+            )
             self.server_socket.bind(("localhost", self.config.port))
             self.server_socket.listen(5)
             # Set a timeout to allow checking shutdown event
@@ -226,7 +341,7 @@ class SearchServer:
             if self.config.ssl_enabled:
                 self.setup_ssl()
                 if not self.ssl_context:
-                    raise RuntimeError("SSL context not initialized")
+                    raise SSLSetupError("SSL context not initialized")
                 self.logger.info("SSL enabled - all connections must use SSL")
 
             self.logger.info(f"Server started on port {self._port}")
@@ -237,37 +352,12 @@ class SearchServer:
                     client_socket, client_address = self.server_socket.accept()
                     self.logger.info(
                         f"Accepted connection from {client_address}"
-                        )
-
-                    # If SSL is enabled, wrap the socket
-                    if self.config.ssl_enabled:
-                        try:
-                            client_socket = self.ssl_context.wrap_socket(
-                                client_socket, server_side=True
-                            )
-                            # Verify client certificate
-                            cert = client_socket.getpeercert()
-                            if not cert:
-                                raise ssl.SSLError(
-                                    "No client certificate provided"
-                                    )
-                            self.logger.info(
-                                "SSL handshake completed successfully"
-                                )
-                        except ssl.SSLError as e:
-                            self.logger.error(
-                                f"SSL handshake failed: {str(e)}"
-                                )
-                            client_socket.close()
-                            continue
-
-                    # Handle client in a new thread
-                    client_thread = threading.Thread(
-                        target=self.handle_client,
-                        args=(client_socket, client_address),
                     )
-                    client_thread.daemon = True
-                    client_thread.start()
+
+                    # Submit connection handling to thread pool
+                    self._thread_pool.submit(
+                        self._handle_connection, client_socket, client_address
+                    )
 
                 except socket.timeout:
                     continue
@@ -275,18 +365,20 @@ class SearchServer:
                     if not self._shutdown_event.is_set():
                         self.logger.error(
                             f"Error accepting connection: {str(e)}"
-                            )
+                        )
 
         except Exception as e:
             self.logger.error(f"Server error: {str(e)}")
-            raise
+            raise SearchServerError(f"Failed to start server: {str(e)}")
         finally:
             self._running = False
             if self.server_socket:
                 self.server_socket.close()
+            # Shutdown thread pool gracefully
+            self._thread_pool.shutdown(wait=True)
 
     def stop(self) -> None:
-        """Stop the server."""
+        """Stop the server gracefully."""
         if not self._running:
             return
 
@@ -300,6 +392,9 @@ class SearchServer:
             except Exception as e:
                 self.logger.error(f"Error closing server socket: {str(e)}")
             self.server_socket = None
+
+        # Shutdown thread pool
+        self._thread_pool.shutdown(wait=True)
 
         self.logger.info("Server stopped")
 

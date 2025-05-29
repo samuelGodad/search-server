@@ -176,7 +176,7 @@ A secure, configurable, and high-performance string search server with SSL/TLS a
 4. Secure private keys
 5. Use strong cipher suites
 
-## Performance
+## Performance 
 
 See the [Performance Analysis](#performance-analysis) section for detailed metrics and recommendations.
 
@@ -351,64 +351,73 @@ The server implements multiple search algorithms, each optimized for different u
 
 ### Performance Metrics
 
-#### Search Algorithm Performance at 250,000 Lines
+#### Search Algorithm Performance (Latest Test Results)
+
+```
++-------------+----------+----------+---------------+---------+
+|   File Size | linear   | binary   | boyer_moore   | kmp     |
++=============+==========+==========+===============+=========+
+|        1000 | 0.10 ms  | 0.02 ms  | 0.10 ms       | 0.06 ms |
++-------------+----------+----------+---------------+---------+
+|       10000 | 0.47 ms  | 0.03 ms  | 0.37 ms       | 0.42 ms |
++-------------+----------+----------+---------------+---------+
+|       50000 | 2.08 ms  | 0.17 ms  | 1.91 ms       | 1.47 ms |
++-------------+----------+----------+---------------+---------+
+|      100000 | 3.26 ms  | 0.28 ms  | 2.87 ms       | 3.42 ms |
++-------------+----------+----------+---------------+---------+
+|      250000 | 8.16 ms  | 0.95 ms  | 8.09 ms       | 8.20 ms |
++-------------+----------+----------+---------------+---------+
+```
+
+#### Algorithm Performance at 250,000 Lines
 
 | Algorithm    | Execution Time | Best For                |
 |--------------|----------------|-------------------------|
-| Binary       | ~0.76ms        | Large files             |
-| Linear       | ~4.66ms        | Small files             |
-| Boyer-Moore  | ~251.04ms      | Long patterns           |
-| KMP          | ~1037.00ms     | Short patterns          |
-
-<!-- ![Search Algorithm Performance](tests/data/performance_report.md) -->
-
-# Search Server Performance Report
-
-## Test Results
-
-```
-+-------------+----------+----------+---------------+----------+
-|   File Size | linear   | binary   | boyer_moore   | kmp      |
-+=============+==========+==========+===============+==========+
-|        1000 | 0.10 ms  | 0.01 ms  | 0.06 ms       | 0.12 ms  |
-+-------------+----------+----------+---------------+----------+
-|       10000 | 0.64 ms  | 0.04 ms  | 0.60 ms       | 0.54 ms  |
-+-------------+----------+----------+---------------+----------+
-|       50000 | 3.02 ms  | 0.24 ms  | 2.95 ms       | 3.37 ms  |
-+-------------+----------+----------+---------------+----------+
-|      100000 | 5.95 ms  | 0.55 ms  | 6.20 ms       | 20.47 ms |
-+-------------+----------+----------+---------------+----------+
-|      250000 | 15.06 ms | 1.53 ms  | 14.36 ms      | 14.02 ms |
-+-------------+----------+----------+---------------+----------+
-```
+| Binary       | 0.95 ms        | Large files             |
+| Linear       | 8.16 ms        | Small files             |
+| Boyer-Moore  | 8.09 ms        | Long patterns           |
+| KMP          | 8.20 ms        | Short patterns          |
 
 ## Performance Charts
 
 ![Performance Comparison](tests/data/performance_chart.png)
 
-![Performance 250k lines](tests/data/performance_bar_chart.png)
+![Performance at 250k Lines](tests/data/performance_bar_chart.png)
 
 ## Analysis
 
-1. Binary search have performance for large files
-2. Linear search performance - linearly with file size
-3. Boyer-Moore and KMP algorithms show consistency
-4. All meets the 0.5ms requirement for cached files
+1. **Binary search** shows best performance for large files
+2. **Linear search** performance degrades linearly with file size
+3. **Boyer-Moore and KMP** algorithms show consistent performance
+4. All algorithms meet performance requirements for cached files
 
 
 #### REREAD_ON_QUERY Impact
 
 The `REREAD_ON_QUERY` configuration significantly impacts performance:
 
-| File Size | REREAD=True | REREAD=False | Performance Impact |
-|-----------|-------------|--------------|-------------------|
-| 1,000     | 0.24 ms     | 0.01 ms      | 24x faster        |
-| 10,000    | 2.23 ms     | 0.04 ms      | 56x faster        |
-| 50,000    | 5.33 ms     | 0.11 ms      | 48x faster        |
-| 100,000   | 14.95 ms    | 0.38 ms      | 39x faster        |
-| 250,000   | 39.95 ms    | 0.96 ms      | 42x faster        |
---------------------------------------------------------------
+```
++-------------+---------------+----------------+
+|   File Size | REREAD=True   | REREAD=False   |
++=============+===============+================+
+|        1000 | 0.26 ms       | 0.00 ms        |
++-------------+---------------+----------------+
+|       10000 | 3.57 ms       | 0.03 ms        |
++-------------+---------------+----------------+
+|       50000 | 20.49 ms      | 0.17 ms        |
++-------------+---------------+----------------+
+|      100000 | 45.33 ms      | 0.32 ms        |
++-------------+---------------+----------------+
+|      250000 | 136.52 ms     | 0.95 ms        |
++-------------+---------------+----------------+
+```
 
+**Performance Impact Analysis:**
+- **1,000 lines**: REREAD=False is ~26x faster
+- **10,000 lines**: REREAD=False is ~119x faster  
+- **50,000 lines**: REREAD=False is ~120x faster
+- **100,000 lines**: REREAD=False is ~142x faster
+- **250,000 lines**: REREAD=False is ~144x faster
 
 ![REREAD_ON_QUERY Performance Impact](tests/data/reread_performance_plot.png)
 
@@ -560,7 +569,3 @@ client = SearchClient(port=44445)
 result = client.search_json("your search string", algorithm="linear", benchmark=True)
 ```
 
-### SSL Configuration
-
-1. Enable or disable SSL in `config.ini`:
-   ```
